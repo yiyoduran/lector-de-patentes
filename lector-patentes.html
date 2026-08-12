@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Lector de Patentes</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<style>
+  :root{
+    --bg: #0b0f0d;
+    --panel: #101613;
+    --panel-2: #151d19;
+    --line: #22302a;
+    --amber: #ffb800;
+    --amber-dim: #8a6400;
+    --green: #35d68a;
+    --red: #ff5c5c;
+    --text: #e8ece9;
+    --text-dim: #7f8f87;
+    --mono: 'Courier New', ui-monospace, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{
+    margin:0; padding:0; background:var(--bg); color:var(--text);
+    font-family:var(--sans); height:100%; overflow:hidden;
+  }
+  #app{
+    display:flex; flex-direction:column; height:100vh; height:100dvh;
+  }
+
+  /* Header */
+  header{
+    padding:14px 16px 10px; flex-shrink:0;
+    border-bottom:1px solid var(--line);
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .brand{display:flex; align-items:center; gap:10px;}
+  .brand-mark{
+    width:10px;height:10px;border-radius:50%;
+    background:var(--green); box-shadow:0 0 8px var(--green);
+    animation:pulse 2s infinite;
+  }
+  .brand-mark.off{background:var(--text-dim); box-shadow:none; animation:none;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+  h1{font-size:15px; margin:0; letter-spacing:.08em; text-transform:uppercase; font-weight:700;}
+  .status{font-family:var(--mono); font-size:11px; color:var(--text-dim);}
+
+  /* Camera viewport */
+  .viewport{
+    position:relative; flex:1; min-height:0;
+    background:#000; overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
+  }
+  video, #captured{
+    width:100%; height:100%; object-fit:cover; display:block;
+  }
+  #captured{display:none; position:absolute; inset:0;}
+  canvas#work{display:none;}
+
+  .scan-frame{
+    position:absolute; left:4%; right:4%; top:30%; height:38%;
+    border:2px solid var(--amber);
+    border-radius:8px;
+    box-shadow:0 0 0 2000px rgba(0,0,0,.45);
+    pointer-events:none;
+  }
+  .scan-frame::before, .scan-frame::after{
+    content:''; position:absolute; width:22px; height:22px;
+    border-color:var(--green); border-style:solid;
+  }
+  .scan-frame::before{top:-2px;left:-2px;border-width:3px 0 0 3px; border-top-left-radius:6px;}
+  .scan-frame::after{bottom:-2px;right:-2px;border-width:0 3px 3px 0; border-bottom-right-radius:6px;}
+  .scan-line{
+    position:absolute; left:0; right:0; top:0; height:2px;
+    background:linear-gradient(90deg, transparent, var(--green), transparent);
+    animation:scan 2.2s linear infinite; display:none;
+  }
+  .scan-frame.active .scan-line{display:block;}
+  @keyframes scan{0%{top:4%;}100%{top:94%;}}
+  .frame-label{
+    position:absolute; top:-22px; left:0; font-family:var(--mono);
+    font-size:10px; color:var(--amber); letter-spacing:.1em;
+  }
+
+  .cam-error{
+    position:absolute; inset:0; display:none; flex-direction:column;
+    align-items:center; justify-content:center; gap:10px; padding:24px;
+    text-align:center; color:var(--text-dim); font-size:13px;
+  }
+  .cam-error.show{display:flex;}
+
+  /* Result strip */
+  .result-strip{
+    flex-shrink:0; padding:14px 16px; background:var(--panel);
+    border-top:1px solid var(--line); border-bottom:1px solid var(--line);
+    min-height:64px; display:flex; align-items:center; justify-content:space-between; gap:12px;
+  }
+  .result-plate{
+    font-family:var(--mono); font-size:28px; font-weight:700; letter-spacing:.12em;
+    color:var(--text-dim);
+  }
+  .result-plate.found{color:var(--green); text-shadow:0 0 12px rgba(53,214,138,.35);}
+  .result-meta{font-size:11px; color:var(--text-dim); font-family:var(--mono);}
+  .badge{
+    font-family:var(--mono); font-size:10px; padding:4px 8px; border-radius:4px;
+    border:1px solid var(--line); color:var(--text-dim); white-space:nowrap;
+  }
+  .badge.busy{color:var(--amber); border-color:var(--amber-dim);}
+
+  /* Controls */
+  .controls{
+    flex-shrink:0; padding:14px 16px 10px; display:flex; gap:10px; align-items:center;
+  }
+  .mode-toggle{
+    display:flex; background:var(--panel-2); border:1px solid var(--line);
+    border-radius:10px; padding:3px; flex:1;
+  }
+  .mode-btn{
+    flex:1; background:transparent; border:none; color:var(--text-dim);
+    font-family:var(--sans); font-size:12px; font-weight:600; padding:9px 6px;
+    border-radius:8px; letter-spacing:.02em;
+  }
+  .mode-btn.active{background:var(--amber); color:#1a1400;}
+  #voiceToggle.active{background:var(--panel-2); color:var(--green); border-color:var(--green);}
+
+  .shutter-row{
+    padding:6px 16px 18px; display:flex; align-items:center; justify-content:center;
+    gap:24px; flex-shrink:0;
+  }
+  .flip-btn, .hist-btn{
+    width:44px; height:44px; border-radius:50%; background:var(--panel-2);
+    border:1px solid var(--line); color:var(--text); font-size:18px;
+    display:flex; align-items:center; justify-content:center;
+  }
+  .shutter{
+    width:68px; height:68px; border-radius:50%; background:transparent;
+    border:3px solid var(--text); position:relative;
+  }
+  .shutter::after{
+    content:''; position:absolute; inset:5px; border-radius:50%; background:var(--text);
+  }
+  .shutter.armed{border-color:var(--green);}
+  .shutter.armed::after{background:var(--green);}
+  .shutter:active::after{background:var(--amber);}
+  .hist-count{
+    position:absolute; top:-4px; right:-4px; background:var(--amber); color:#1a1400;
+    font-size:10px; font-weight:700; border-radius:8px; min-width:16px; height:16px;
+    display:flex; align-items:center; justify-content:center; font-family:var(--mono);
+  }
+
+  /* History panel */
+  #history{
+    position:fixed; inset:0; background:var(--bg); z-index:20;
+    transform:translateY(100%); transition:transform .25s ease;
+    display:flex; flex-direction:column;
+  }
+  #history.open{transform:translateY(0);}
+  .hist-header{
+    padding:16px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; justify-content:space-between; flex-shrink:0;
+  }
+  .hist-header h2{font-size:14px; margin:0; letter-spacing:.06em; text-transform:uppercase;}
+  .close-btn{background:none; border:1px solid var(--line); color:var(--text); width:32px;height:32px;border-radius:8px; font-size:16px;}
+  .hist-list{flex:1; overflow-y:auto; padding:8px 16px;}
+  .hist-item{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:12px 4px; border-bottom:1px solid var(--line);
+  }
+  .hist-item .plate{font-family:var(--mono); font-size:18px; font-weight:700; color:var(--green); letter-spacing:.08em;}
+  .hist-item .time{font-family:var(--mono); font-size:11px; color:var(--text-dim);}
+  .hist-empty{padding:40px 16px; text-align:center; color:var(--text-dim); font-size:13px;}
+  .hist-note{
+    padding:12px 16px 20px; font-size:11px; color:var(--text-dim); line-height:1.5;
+    border-top:1px solid var(--line);
+  }
+  .hist-item{position:relative;}
+  .hist-actions{display:flex; align-items:center; gap:6px; flex-wrap:wrap; justify-content:flex-end;}
+  .mini-btn{
+    font-family:var(--mono); font-size:10px; padding:5px 8px; border-radius:5px;
+    background:var(--panel-2); color:var(--amber); border:1px solid var(--amber-dim);
+    white-space:nowrap;
+  }
+  #toast{
+    position:fixed; left:50%; bottom:110px; transform:translate(-50%, 20px);
+    background:var(--panel-2); border:1px solid var(--line); color:var(--text);
+    padding:10px 16px; border-radius:10px; font-size:12px; z-index:30;
+    opacity:0; transition:opacity .2s ease, transform .2s ease; pointer-events:none;
+    box-shadow:0 4px 16px rgba(0,0,0,.4);
+  }
+  #toast.show{opacity:1; transform:translate(-50%, 0);}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <div class="brand">
+      <div class="brand-mark off" id="brandMark"></div>
+      <h1>Lector de Patentes</h1>
+    </div>
+    <div class="status" id="statusText">iniciando cámara…</div>
+  </header>
+
+  <div class="viewport">
+    <video id="video" autoplay playsinline muted></video>
+    <img id="captured" alt="foto capturada">
+    <canvas id="work"></canvas>
+    <div class="scan-frame" id="scanFrame">
+      <span class="frame-label">ALINEAR PATENTE</span>
+      <div class="scan-line"></div>
+    </div>
+    <div class="cam-error" id="camError">
+      <div>No se pudo acceder a la cámara.</div>
+      <div>Revisa los permisos de cámara en el navegador y recarga la página.</div>
+    </div>
+  </div>
+
+  <div class="result-strip">
+    <div>
+      <div class="result-plate" id="resultPlate">— — — —</div>
+      <div class="result-meta" id="resultMeta">esperando lectura</div>
+    </div>
+    <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+      <div class="badge" id="ocrBadge">OCR listo</div>
+      <button class="badge" id="autosegBtn" style="display:none; background:var(--panel-2); color:var(--amber); border-color:var(--amber-dim); font-weight:700;">🔎 Auto Seguro</button>
+      <button class="badge" id="patenteChileBtn" style="display:none; background:var(--panel-2); color:var(--amber); border-color:var(--amber-dim); font-weight:700;">🔎 Patentechile</button>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="modePhoto">FOTO</button>
+      <button class="mode-btn" id="modeLive">TIEMPO REAL</button>
+    </div>
+    <button class="mode-btn" id="voiceToggle" style="flex:0 0 auto; background:var(--panel-2); border:1px solid var(--line); border-radius:10px; color:var(--text-dim);">🔊 VOZ</button>
+  </div>
+
+  <div class="shutter-row">
+    <button class="flip-btn" id="flipBtn" title="Cambiar cámara">⟳</button>
+    <button class="shutter" id="shutterBtn"></button>
+    <button class="hist-btn" id="histBtn" style="position:relative;" title="Historial">
+      ☰
+      <span class="hist-count" id="histCount" style="display:none;">0</span>
+    </button>
+  </div>
+
+</div>
+
+<div id="history">
+  <div class="hist-header">
+    <h2>Historial de sesión</h2>
+    <button class="close-btn" id="closeHist">✕</button>
+  </div>
+  <div class="hist-list" id="histList">
+    <div class="hist-empty">Aún no hay patentes leídas en esta sesión.</div>
+  </div>
+  <div class="hist-note">
+    Este historial es solo lectura de placas (OCR) y se guarda únicamente en este dispositivo mientras la página esté abierta. No consulta ni almacena datos de propietarios.
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function(){
+  const video = document.getElementById('video');
+  const captured = document.getElementById('captured');
+  const work = document.getElementById('work');
+  const ctx = work.getContext('2d');
+  const statusText = document.getElementById('statusText');
+  const brandMark = document.getElementById('brandMark');
+  const scanFrame = document.getElementById('scanFrame');
+  const camError = document.getElementById('camError');
+  const resultPlate = document.getElementById('resultPlate');
+  const resultMeta = document.getElementById('resultMeta');
+  const ocrBadge = document.getElementById('ocrBadge');
+  const modePhoto = document.getElementById('modePhoto');
+  const modeLive = document.getElementById('modeLive');
+  const shutterBtn = document.getElementById('shutterBtn');
+  const flipBtn = document.getElementById('flipBtn');
+  const histBtn = document.getElementById('histBtn');
+  const histCount = document.getElementById('histCount');
+  const history = document.getElementById('history');
+  const closeHist = document.getElementById('closeHist');
+  const histList = document.getElementById('histList');
+  const autosegBtn = document.getElementById('autosegBtn');
+  const patenteChileBtn = document.getElementById('patenteChileBtn');
+  const toast = document.getElementById('toast');
+  const voiceToggle = document.getElementById('voiceToggle');
+
+  let voiceOn = true;
+  voiceToggle.classList.add('active');
+
+  voiceToggle.addEventListener('click', ()=>{
+    voiceOn = !voiceOn;
+    voiceToggle.classList.toggle('active', voiceOn);
+    voiceToggle.style.color = voiceOn ? '' : 'var(--text-dim)';
+  });
+
+  function speakPlate(plate){
+    if(!voiceOn || !('speechSynthesis' in window)) return;
+    const spelled = plate.split('').join(' ');
+    const utter = new SpeechSynthesisUtterance('Patente detectada: ' + spelled);
+    utter.lang = 'es-CL';
+    utter.rate = 1.0;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+  }
+
+  function feedbackOnDetect(plate){
+    if(navigator.vibrate) navigator.vibrate(180);
+    speakPlate(plate);
+  }
+
+  const AUTOSEGURO_URL = 'https://www.autoseguro.gob.cl/';
+  const PATENTECHILE_URL = 'https://www.patentechile.com/';
+
+  function showToast(msg){
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(()=> toast.classList.remove('show'), 2200);
+  }
+
+  async function copyPlate(plate){
+    try{
+      await navigator.clipboard.writeText(plate);
+      return true;
+    }catch(e){
+      return false;
+    }
+  }
+
+  async function openAutoSeguro(plate){
+    const copied = await copyPlate(plate);
+    showToast(copied ? ('Patente ' + plate + ' copiada — pégala en Auto Seguro') : ('Abriendo Auto Seguro — busca ' + plate + ' manualmente'));
+    window.open(AUTOSEGURO_URL, '_blank');
+  }
+
+  async function openPatenteChile(plate){
+    const copied = await copyPlate(plate);
+    showToast(copied ? ('Patente ' + plate + ' copiada — pégala en Patentechile') : ('Abriendo Patentechile — busca ' + plate + ' manualmente'));
+    window.open(PATENTECHILE_URL, '_blank');
+  }
+
+  let stream = null;
+  let facingMode = 'environment';
+  let liveMode = false;
+  let liveTimer = null;
+  let busy = false;
+  let sessionHistory = [];
+  let worker = null;
+
+  // Patrones de patente chilena: antiguo AA1234 / AA·1234, nuevo LLLL99
+  const PLATE_RE_NEW = /\b([BCDFGHJKLPRSTVWXYZ]{4}\s?-?\s?\d{2})\b/;
+  const PLATE_RE_OLD = /\b([A-Z]{2}\s?-?\s?\d{4})\b/;
+
+  function setStatus(t){ statusText.textContent = t; }
+
+  async function initWorker(){
+    ocrBadge.textContent = 'cargando OCR…';
+    worker = await Tesseract.createWorker('eng', 1, {
+      logger: () => {}
+    });
+    await worker.setParameters({
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
+      tessedit_pageseg_mode: 7
+    });
+    ocrBadge.textContent = 'OCR listo';
+  }
+
+  async function startCamera(){
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); }
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        video:{ facingMode:{ ideal:facingMode }, width:{ideal:1280}, height:{ideal:720} },
+        audio:false
+      });
+      video.srcObject = stream;
+      video.style.display='block';
+      captured.style.display='none';
+      camError.classList.remove('show');
+      brandMark.classList.remove('off');
+      setStatus('cámara activa');
+    }catch(e){
+      camError.classList.add('show');
+      brandMark.classList.add('off');
+      setStatus('sin acceso a cámara');
+    }
+  }
+
+  function cropToFrameCanvas(sourceEl, srcW, srcH){
+    // Recorta la zona del recuadro de escaneo para mejorar precisión del OCR
+    const rectBox = scanFrame.getBoundingClientRect();
+    const vpBox = document.querySelector('.viewport').getBoundingClientRect();
+    const relX = (rectBox.left - vpBox.left) / vpBox.width;
+    const relY = (rectBox.top - vpBox.top) / vpBox.height;
+    const relW = rectBox.width / vpBox.width;
+    const relH = rectBox.height / vpBox.height;
+
+    const sx = relX * srcW, sy = relY * srcH, sw = relW * srcW, sh = relH * srcH;
+    const scaleUp = 2.2;
+    work.width = sw * scaleUp;
+    work.height = sh * scaleUp;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(sourceEl, sx, sy, sw, sh, 0, 0, work.width, work.height);
+
+    // Escala de grises + contraste simple para ayudar al OCR
+    const img = ctx.getImageData(0,0,work.width, work.height);
+    const d = img.data;
+    for(let i=0;i<d.length;i+=4){
+      const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      const v = g > 130 ? 255 : (g < 90 ? 0 : g);
+      d[i]=d[i+1]=d[i+2]=v;
+    }
+    ctx.putImageData(img,0,0);
+    return work.toDataURL('image/png');
+  }
+
+  function normalizePlate(raw){
+    let s = raw.toUpperCase().replace(/[^A-Z0-9]/g,'');
+    let m = s.match(/([BCDFGHJKLPRSTVWXYZ]{4})(\d{2})/);
+    if(m) return m[1]+m[2];
+    m = s.match(/([A-Z]{2})(\d{4})/);
+    if(m) return m[1]+m[2];
+    return null;
+  }
+
+  async function runOCR(sourceEl, srcW, srcH){
+    if(busy || !worker) return;
+    busy = true;
+    ocrBadge.textContent = 'leyendo…';
+    ocrBadge.classList.add('busy');
+    scanFrame.classList.add('active');
+    try{
+      const dataUrl = cropToFrameCanvas(sourceEl, srcW, srcH);
+      const { data } = await worker.recognize(dataUrl);
+      const text = (data.text || '').trim();
+      const plate = normalizePlate(text.replace(/\s+/g,''));
+      if(plate){
+        resultPlate.textContent = plate;
+        resultPlate.classList.add('found');
+        resultMeta.textContent = 'detectada ' + new Date().toLocaleTimeString('es-CL');
+        autosegBtn.style.display = 'block';
+        autosegBtn.onclick = ()=> openAutoSeguro(plate);
+        patenteChileBtn.style.display = 'block';
+        patenteChileBtn.onclick = ()=> openPatenteChile(plate);
+        const isNew = addToHistory(plate);
+        if(isNew) feedbackOnDetect(plate);
+      } else {
+        resultPlate.classList.remove('found');
+        resultMeta.textContent = text ? ('detectó: "' + text + '" (no calza con formato)') : 'sin texto legible';
+        autosegBtn.style.display = 'none';
+        patenteChileBtn.style.display = 'none';
+      }
+    }catch(e){
+      resultMeta.textContent = 'error de lectura, intenta de nuevo';
+    }
+    busy = false;
+    ocrBadge.textContent = 'OCR listo';
+    ocrBadge.classList.remove('busy');
+    scanFrame.classList.remove('active');
+  }
+
+  function addToHistory(plate){
+    const last = sessionHistory[0];
+    if(last && last.plate === plate && (Date.now()-last.ts) < 8000) return false; // evita repetir voz/vibración con la misma patente
+    const entry = { plate, ts: Date.now() };
+    sessionHistory.unshift(entry);
+    renderHistory();
+    return true;
+  }
+
+  function renderHistory(){
+    histCount.style.display = sessionHistory.length ? 'flex' : 'none';
+    histCount.textContent = sessionHistory.length;
+    if(!sessionHistory.length){
+      histList.innerHTML = '<div class="hist-empty">Aún no hay patentes leídas en esta sesión.</div>';
+      return;
+    }
+    histList.innerHTML = sessionHistory.map(e=>{
+      const t = new Date(e.ts).toLocaleTimeString('es-CL');
+      return '<div class="hist-item"><span class="plate">'+e.plate+'</span>'
+        + '<span class="hist-actions"><span class="time">'+t+'</span>'
+        + '<button class="mini-btn" data-plate="'+e.plate+'" data-site="autoseguro">Auto Seguro</button>'
+        + '<button class="mini-btn" data-plate="'+e.plate+'" data-site="patentechile">Patentechile</button></span></div>';
+    }).join('');
+    histList.querySelectorAll('.mini-btn').forEach(btn=>{
+      btn.addEventListener('click', ()=>{
+        if(btn.dataset.site === 'patentechile') openPatenteChile(btn.dataset.plate);
+        else openAutoSeguro(btn.dataset.plate);
+      });
+    });
+  }
+
+  function capturePhoto(){
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth; c.height = video.videoHeight;
+    c.getContext('2d').drawImage(video,0,0);
+    captured.src = c.toDataURL('image/png');
+    captured.style.display='block';
+    video.style.display='none';
+    runOCR(video, video.videoWidth, video.videoHeight);
+  }
+
+  shutterBtn.addEventListener('click', ()=>{
+    if(liveMode) return;
+    if(!stream) return;
+    capturePhoto();
+    setTimeout(()=>{ // volver a mostrar cámara viva para siguiente toma
+      captured.style.display='none';
+      video.style.display='block';
+    }, 1400);
+  });
+
+  modePhoto.addEventListener('click', ()=>{
+    liveMode = false;
+    modePhoto.classList.add('active');
+    modeLive.classList.remove('active');
+    shutterBtn.classList.remove('armed');
+    if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
+    setStatus('modo foto');
+  });
+
+  modeLive.addEventListener('click', ()=>{
+    liveMode = true;
+    modeLive.classList.add('active');
+    modePhoto.classList.remove('active');
+    shutterBtn.classList.add('armed');
+    setStatus('escaneo continuo activo');
+    if(liveTimer) clearInterval(liveTimer);
+    liveTimer = setInterval(()=>{
+      if(!stream || busy) return;
+      runOCR(video, video.videoWidth, video.videoHeight);
+    }, 1200);
+  });
+
+  shutterBtn.addEventListener('click', ()=>{
+    if(!liveMode) return;
+    if(!stream || busy) return;
+    runOCR(video, video.videoWidth, video.videoHeight);
+  });
+
+  flipBtn.addEventListener('click', ()=>{
+    facingMode = facingMode === 'environment' ? 'user' : 'environment';
+    startCamera();
+  });
+
+  histBtn.addEventListener('click', ()=> history.classList.add('open'));
+  closeHist.addEventListener('click', ()=> history.classList.remove('open'));
+
+  (async function init(){
+    await startCamera();
+    await initWorker();
+  })();
+})();
+</script>
+</body>
+</html>
